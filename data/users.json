@@ -1,0 +1,30 @@
+{
+  "sriramkanuri4@gmail.com": {
+    "password": "",
+    "profile": {
+      "id": "usr-owner-permanent",
+      "email": "sriramkanuri4@gmail.com",
+      "full_name": "Platform Owner",
+      "college": "CircuitIQ Administration",
+      "student_id": "SUPER-ADMIN-01",
+      "mobile": "",
+      "role": "SUPER_ADMIN",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-09-29T12:00:00.000Z"
+    }
+  },
+  "arjun.sharma@iitb.ac.in": {
+    "password": "",
+    "profile": {
+      "id": "usr-1790669604848-v7tbs9",
+      "email": "arjun.sharma@iitb.ac.in",
+      "full_name": "Arjun Sharma",
+      "college": "Indian Institute of Technology Bombay",
+      "student_id": "IITB-EE-2026-409",
+      "mobile": "+91 98765 43210",
+      "role": "STUDENT",
+      "created_at": "2026-09-29T08:13:24.848Z",
+      "updated_at": "2026-09-29T08:14:46.140Z"
+    }
+  }
+}
