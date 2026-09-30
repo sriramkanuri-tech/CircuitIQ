@@ -33,6 +33,7 @@ export default function LoginPage() {
   // OTP State
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const [maskedEmail, setMaskedEmail] = useState('');
+  const [otpToken, setOtpToken] = useState<string>('');
   const [resendCooldown, setResendCooldown] = useState(60);
   const [canResend, setCanResend] = useState(false);
   const [devOtpHint, setDevOtpHint] = useState<string | null>(null);
@@ -77,6 +78,13 @@ export default function LoginPage() {
       const res = await sendOtp(email, password);
       if (res.success) {
         setMaskedEmail(res.maskedEmail || email);
+        if (res.otpToken) {
+          setOtpToken(res.otpToken);
+          try {
+            sessionStorage.setItem('circuitiq_pending_otp_token', res.otpToken);
+            sessionStorage.setItem('circuitiq_pending_email', email.trim());
+          } catch {}
+        }
         if (res.devOtp) setDevOtpHint(res.devOtp);
         setStep('OTP');
         setResendCooldown(60);
@@ -92,8 +100,12 @@ export default function LoginPage() {
     }
   };
 
+  // Ref to prevent double-dispatch / race conditions
+  const isVerifyingRef = useRef(false);
+
   // Step 2: Handle OTP input digit changes
   const handleDigitChange = (index: number, value: string) => {
+    setError(null);
     // Only accept numeric inputs
     const numeric = value.replace(/\D/g, '');
     const newDigits = [...otpDigits];
@@ -125,7 +137,9 @@ export default function LoginPage() {
     if (numeric && index === 5) {
       const fullOtp = newDigits.join('');
       if (fullOtp.length === 6) {
-        performOtpVerification(fullOtp);
+        setTimeout(() => {
+          performOtpVerification(fullOtp);
+        }, 50);
       }
     }
   };
@@ -138,6 +152,7 @@ export default function LoginPage() {
 
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
+    setError(null);
     const pasteData = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
     if (!pasteData) return;
     const newDigits = [...otpDigits];
@@ -147,38 +162,62 @@ export default function LoginPage() {
     setOtpDigits(newDigits);
     inputRefs.current[Math.min(pasteData.length, 5)]?.focus();
     if (pasteData.length === 6) {
-      performOtpVerification(pasteData);
+      setTimeout(() => {
+        performOtpVerification(pasteData);
+      }, 50);
     }
   };
 
-  // Step 3: Perform OTP Verification
+  // Step 3: Perform OTP Verification with concurrency lock
   const performOtpVerification = async (codeToVerify?: string) => {
-    const code = codeToVerify || otpDigits.join('');
+    if (isVerifyingRef.current) return;
+
+    const code = (codeToVerify || otpDigits.join('')).trim();
     if (code.length < 6) {
       setError('Please enter all 6 digits of the verification code.');
       return;
     }
 
+    isVerifyingRef.current = true;
     setError(null);
     setLoading(true);
 
+    let activeToken = otpToken;
+    let activeEmail = email.trim();
+    if (!activeToken) {
+      try {
+        activeToken = sessionStorage.getItem('circuitiq_pending_otp_token') || '';
+      } catch {}
+    }
+    if (!activeEmail) {
+      try {
+        activeEmail = sessionStorage.getItem('circuitiq_pending_email') || '';
+      } catch {}
+    }
+
     try {
-      const res = await verifyOtp(email, code);
+      const res = await verifyOtp(activeEmail || email, code, activeToken);
       if (res.success) {
         setSuccessMsg('Security verification confirmed. Entering portal...');
+        try {
+          sessionStorage.removeItem('circuitiq_pending_otp_token');
+          sessionStorage.removeItem('circuitiq_pending_email');
+        } catch {}
         setTimeout(() => {
           if (res.role === 'ADMIN' || res.role === 'SUPER_ADMIN') {
             router.push('/admin');
           } else {
             router.push('/dashboard');
           }
-        }, 600);
+        }, 500);
       } else {
         setError(res.error || 'Invalid or expired verification code. Please check your email.');
+        isVerifyingRef.current = false;
+        setLoading(false);
       }
     } catch (err: any) {
       setError(err.message || 'Verification failed. Please retry.');
-    } finally {
+      isVerifyingRef.current = false;
       setLoading(false);
     }
   };
@@ -192,8 +231,17 @@ export default function LoginPage() {
     try {
       const res = await sendOtp(email, password);
       if (res.success) {
+        if (res.otpToken) {
+          setOtpToken(res.otpToken);
+          try {
+            sessionStorage.setItem('circuitiq_pending_otp_token', res.otpToken);
+            sessionStorage.setItem('circuitiq_pending_email', email.trim());
+          } catch {}
+        }
         setResendCooldown(60);
         setCanResend(false);
+        setOtpDigits(['', '', '', '', '', '']);
+        isVerifyingRef.current = false;
         if (res.devOtp) setDevOtpHint(res.devOtp);
         setSuccessMsg('A new verification code has been dispatched to your email.');
         setTimeout(() => setSuccessMsg(null), 4000);

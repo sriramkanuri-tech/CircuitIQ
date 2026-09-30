@@ -4,10 +4,15 @@ import path from 'path';
 import { UserProfile } from '@/types';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { sendServerOtpEmail } from '@/lib/email/mailer';
+import {
+  createOtpToken,
+  getStoredOtps,
+  saveStoredOtps,
+  isOwnerEmail,
+  OWNER_EMAILS,
+} from '@/lib/auth/otp';
 
 const USERS_FILE_PATH = path.join(process.cwd(), 'data', 'users.json');
-const OTPS_FILE_PATH = path.join(process.cwd(), 'data', 'otps.json');
-const PERMANENT_OWNER_EMAIL = 'sriramkanuri4@gmail.com';
 
 function getStoredUsers(): Record<string, { password: string; profile: UserProfile }> {
   try {
@@ -15,25 +20,6 @@ function getStoredUsers(): Record<string, { password: string; profile: UserProfi
     return JSON.parse(fs.readFileSync(USERS_FILE_PATH, 'utf-8'));
   } catch {
     return {};
-  }
-}
-
-function getStoredOtps(): Record<string, { otp: string; expiresAt: number; user: UserProfile; attempts: number }> {
-  try {
-    if (!fs.existsSync(OTPS_FILE_PATH)) return {};
-    return JSON.parse(fs.readFileSync(OTPS_FILE_PATH, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-function saveStoredOtps(data: Record<string, { otp: string; expiresAt: number; user: UserProfile; attempts: number }>) {
-  try {
-    const dir = path.dirname(OTPS_FILE_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(OTPS_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Error saving otps.json:', e);
   }
 }
 
@@ -63,15 +49,14 @@ export async function POST(request: Request) {
           .single();
 
         if (profileRow) {
-          const isOwner = normalized === PERMANENT_OWNER_EMAIL;
           userProfile = {
             id: profileRow.id,
             email: profileRow.email,
-            full_name: profileRow.full_name || 'Student',
+            full_name: profileRow.full_name || (isOwnerEmail(normalized) ? 'Platform Owner' : 'Student'),
             college: profileRow.college || '',
             student_id: profileRow.student_id || '',
             mobile: profileRow.mobile || '',
-            role: isOwner ? 'SUPER_ADMIN' : profileRow.role || 'STUDENT',
+            role: isOwnerEmail(normalized) ? 'SUPER_ADMIN' : profileRow.role || 'STUDENT',
             created_at: profileRow.created_at || new Date().toISOString(),
             updated_at: profileRow.updated_at || new Date().toISOString(),
           };
@@ -81,23 +66,32 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. Check local users store
-    if (!userProfile && storedUsers[normalized]) {
-      const record = storedUsers[normalized];
-      if (!skipPasswordCheck && record.password && password && record.password !== password) {
-        return NextResponse.json({ error: 'Invalid password. Please verify your credentials.' }, { status: 401 });
+    // 2. Check local users store (also check owner alias)
+    if (!userProfile) {
+      const foundKey = storedUsers[normalized]
+        ? normalized
+        : isOwnerEmail(normalized)
+        ? OWNER_EMAILS.find((e) => storedUsers[e])
+        : undefined;
+
+      if (foundKey && storedUsers[foundKey]) {
+        const record = storedUsers[foundKey];
+        if (!skipPasswordCheck && record.password && password && record.password !== password) {
+          return NextResponse.json({ error: 'Invalid password. Please verify your credentials.' }, { status: 401 });
+        }
+        userProfile = {
+          ...record.profile,
+          email: normalized,
+          role: isOwnerEmail(normalized) ? 'SUPER_ADMIN' : record.profile.role,
+        };
       }
-      userProfile = {
-        ...record.profile,
-        role: normalized === PERMANENT_OWNER_EMAIL ? 'SUPER_ADMIN' : record.profile.role,
-      };
     }
 
-    // 3. Provision permanent super admin if not present
-    if (!userProfile && normalized === PERMANENT_OWNER_EMAIL) {
+    // 3. Provision permanent super admin if either owner email is used
+    if (!userProfile && isOwnerEmail(normalized)) {
       userProfile = {
-        id: 'usr-owner-permanent',
-        email: PERMANENT_OWNER_EMAIL,
+        id: `usr-owner-${normalized.replace(/[^a-zA-Z0-9]/g, '')}`,
+        email: normalized,
         full_name: 'Platform Owner',
         college: 'CircuitIQ Administration',
         student_id: 'SUPER-ADMIN-01',
@@ -123,12 +117,18 @@ export async function POST(request: Request) {
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
+    // Create tamper-proof HMAC signature token
+    const otpToken = createOtpToken(normalized, otpCode, expiresAt);
+
+    // Save in store & memory
     const otps = getStoredOtps();
     otps[normalized] = {
       otp: otpCode,
       expiresAt,
       user: userProfile,
       attempts: 0,
+      verified: false,
+      otpToken,
     };
     saveStoredOtps(otps);
 
@@ -138,7 +138,7 @@ export async function POST(request: Request) {
     const emailRes = await sendServerOtpEmail(normalized, otpCode, userProfile.full_name);
 
     if (!emailRes.success) {
-      console.warn(`[CircuitIQ OTP] Email delivery warning: ${emailRes.error}`);
+      console.warn(`[CircuitIQ OTP] Email delivery notice: ${emailRes.error}`);
     }
 
     // Masked email for UI display: e.g. s***4@gmail.com
@@ -147,13 +147,22 @@ export async function POST(request: Request) {
       ? `${parts[0][0]}***${parts[0][parts[0].length - 1]}@${parts[1]}`
       : `${parts[0]}***@${parts[1]}`;
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       message: `Authentication code sent to your email.`,
       maskedEmail: masked,
-      // For localhost / dev testing convenience, include devOtp only in development
+      otpToken,
       devOtp: process.env.NODE_ENV !== 'production' ? otpCode : undefined,
     });
+
+    response.cookies.set('circuitiq_otp_token', otpToken, {
+      path: '/',
+      maxAge: 600,
+      sameSite: 'lax',
+      httpOnly: false,
+    });
+
+    return response;
   } catch (error: any) {
     console.error('POST /api/auth/otp/send error:', error);
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });

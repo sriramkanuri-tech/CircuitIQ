@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
 export const PERMANENT_OWNER_EMAIL = 'sriramkanuri4@gmail.com';
+export const OWNER_EMAILS = ['sriramkanuri4@gmail.com', 'sriramkanuri04@gmail.com'];
+export const isOwnerEmail = (email?: string) => Boolean(email && OWNER_EMAILS.includes(email.toLowerCase().trim()));
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -21,8 +23,8 @@ interface AuthContextType {
   }) => Promise<{ success: boolean; error?: string; role?: UserRole }>;
   logout: () => void;
   updateProfile: (data: Partial<UserProfile>) => Promise<{ success: boolean }>;
-  sendOtp: (email: string, password?: string) => Promise<{ success: boolean; maskedEmail?: string; error?: string; devOtp?: string }>;
-  verifyOtp: (email: string, otp: string) => Promise<{ success: boolean; role?: UserRole; error?: string }>;
+  sendOtp: (email: string, password?: string) => Promise<{ success: boolean; maskedEmail?: string; otpToken?: string; error?: string; devOtp?: string }>;
+  verifyOtp: (email: string, otp: string, otpToken?: string) => Promise<{ success: boolean; role?: UserRole; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -34,7 +36,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Helper to ensure owner email ALWAYS has SUPER_ADMIN role
   const enforceRolePolicy = (profile: UserProfile): UserProfile => {
-    if (profile.email && profile.email.toLowerCase().trim() === PERMANENT_OWNER_EMAIL) {
+    if (isOwnerEmail(profile.email)) {
       return { ...profile, role: 'SUPER_ADMIN' };
     }
     return profile;
@@ -402,7 +404,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const sendOtp = async (
     email: string,
     password?: string
-  ): Promise<{ success: boolean; maskedEmail?: string; error?: string; devOtp?: string }> => {
+  ): Promise<{ success: boolean; maskedEmail?: string; otpToken?: string; error?: string; devOtp?: string }> => {
     try {
       const res = await fetch('/api/auth/otp/send', {
         method: 'POST',
@@ -413,7 +415,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!res.ok) {
         return { success: false, error: data.error || 'Failed to dispatch security code.' };
       }
-      return { success: true, maskedEmail: data.maskedEmail, devOtp: data.devOtp };
+      return { success: true, maskedEmail: data.maskedEmail, otpToken: data.otpToken, devOtp: data.devOtp };
     } catch (e: any) {
       return { success: false, error: e.message || 'Network error occurred dispatching OTP code.' };
     }
@@ -421,13 +423,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyOtp = async (
     email: string,
-    otp: string
+    otp: string,
+    otpToken?: string
   ): Promise<{ success: boolean; role?: UserRole; error?: string }> => {
     try {
       const res = await fetch('/api/auth/otp/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.toLowerCase().trim(), otp: otp.trim() }),
+        body: JSON.stringify({ email: email.toLowerCase().trim(), otp: otp.trim(), otpToken }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
