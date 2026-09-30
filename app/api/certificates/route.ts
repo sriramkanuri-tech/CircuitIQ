@@ -150,6 +150,22 @@ export async function POST(request: Request) {
     stored[cert.certificate_number] = cert;
     saveStoredCertificates(stored);
 
+    // 3. Dispatch certificate email via Gmail SMTP
+    if (cert.student_email) {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const verifyUrl = `${appUrl}/verify/${cert.certificate_number}`;
+      import('@/lib/email/mailer').then(({ sendServerCertificateEmail }) => {
+        sendServerCertificateEmail({
+          studentName: cert.student_name || 'Student',
+          studentEmail: cert.student_email || '',
+          certificateNumber: cert.certificate_number,
+          score: cert.score,
+          verificationUrl: verifyUrl,
+          pdfBase64: cert.pdf_path,
+        }).catch((emailErr) => console.error('Error dispatching certificate email on cert creation:', emailErr));
+      }).catch(console.error);
+    }
+
     return NextResponse.json({ success: true, certificate: cert });
   } catch (error: any) {
     console.error('POST /api/certificates error:', error);

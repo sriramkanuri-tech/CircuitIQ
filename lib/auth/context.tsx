@@ -21,6 +21,8 @@ interface AuthContextType {
   }) => Promise<{ success: boolean; error?: string; role?: UserRole }>;
   logout: () => void;
   updateProfile: (data: Partial<UserProfile>) => Promise<{ success: boolean }>;
+  sendOtp: (email: string, password?: string) => Promise<{ success: boolean; maskedEmail?: string; error?: string; devOtp?: string }>;
+  verifyOtp: (email: string, otp: string) => Promise<{ success: boolean; role?: UserRole; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -397,8 +399,81 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  const sendOtp = async (
+    email: string,
+    password?: string
+  ): Promise<{ success: boolean; maskedEmail?: string; error?: string; devOtp?: string }> => {
+    try {
+      const res = await fetch('/api/auth/otp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.toLowerCase().trim(), password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { success: false, error: data.error || 'Failed to dispatch security code.' };
+      }
+      return { success: true, maskedEmail: data.maskedEmail, devOtp: data.devOtp };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error occurred dispatching OTP code.' };
+    }
+  };
+
+  const verifyOtp = async (
+    email: string,
+    otp: string
+  ): Promise<{ success: boolean; role?: UserRole; error?: string }> => {
+    try {
+      const res = await fetch('/api/auth/otp/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.toLowerCase().trim(), otp: otp.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { success: false, error: data.error || 'Invalid or expired verification code.' };
+      }
+      if (data.user) {
+        const sanitized = enforceRolePolicy(data.user);
+        setUser(sanitized);
+        localStorage.setItem('circuitiq_session', JSON.stringify(sanitized));
+
+        // Cache on device
+        try {
+          const rawStored = localStorage.getItem('circuitiq_registered_users');
+          const stored = rawStored ? JSON.parse(rawStored) : {};
+          stored[sanitized.email.toLowerCase().trim()] = {
+            password: '',
+            profile: sanitized,
+          };
+          localStorage.setItem('circuitiq_registered_users', JSON.stringify(stored));
+        } catch {}
+
+        if (typeof document !== 'undefined') {
+          document.cookie = `circuitiq_session_token=active; path=/; max-age=604800; SameSite=Lax`;
+          document.cookie = `circuitiq_role=${sanitized.role}; path=/; max-age=604800; SameSite=Lax`;
+        }
+        return { success: true, role: sanitized.role };
+      }
+      return { success: false, error: 'User session profile missing from response.' };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error during verification.' };
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, updateProfile }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        sendOtp,
+        verifyOtp,
+        register,
+        logout,
+        updateProfile,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
